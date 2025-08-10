@@ -61,3 +61,5 @@ class App(badge.BaseApp):
                     self.logger.info(f"Sending LOSE packet to {player_id}")
                 
                 badge.radio.send_packet(player_id, result_packet)
+                # Wait 2 seconds between each packet to avoid queue overflow
+                time.sleep(2)
