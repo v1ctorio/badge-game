@@ -1,4 +1,5 @@
- {
-     "displayName": "Badge game host",
-     "appNumber": 849
+{
+  "displayName": "Badge game host",
+  "appNumber": 849,
+  "permissison": "contacts:write"
 }
