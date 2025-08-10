@@ -9,6 +9,7 @@ PACKET_WIN = 3       # Host tells badge they won
 PACKET_LOSE = 4      # Host tells badge they were eliminated
 PACKET_START = 5     # Host starts a new round
 PACKET_JOIN_ACK = 6  # Host acknowledges join request
+PACKET_HOST_ANNOUNCE = 7  # Host announces its presence
 
 GAME_BUTTONS = [
     (Buttons.SW3, 3),
@@ -149,6 +150,18 @@ class App(badge.BaseApp):
             self.logger.info(f"Sent join request via broadcast")
         except Exception as e:
             self.logger.error(f"Failed to send join request: {e}")
+    
+    def attempt_join_specific_host(self, host_badge_id):
+        """Try to join a specific host"""
+        try:
+            my_contact = badge.contacts.my_contact()
+            player_name = my_contact.name if my_contact else f"Badge{my_contact.badge_id if my_contact else 'Unknown'}"
+            join_data = bytes([PACKET_JOIN]) + player_name.encode()[:20]  # Limit name length
+            # Send directly to the host
+            badge.radio.send_packet(host_badge_id, join_data)
+            self.logger.info(f"Sent join request to host {host_badge_id:04X}")
+        except Exception as e:
+            self.logger.error(f"Failed to send join request to host: {e}")
 
     def press_button(self, button_num):
         """Send button press to host"""
@@ -172,7 +185,15 @@ class App(badge.BaseApp):
             
         packet_type = packet.data[0]
         
-        if packet_type == PACKET_JOIN_ACK:
+        if packet_type == PACKET_HOST_ANNOUNCE:
+            # Host is announcing its presence
+            if self.game_state == "disconnected":
+                self.logger.info(f"Discovered host at {packet.source:04X}")
+                # Immediately try to join this host
+                self.host_id = packet.source
+                self.attempt_join_specific_host(packet.source)
+                
+        elif packet_type == PACKET_JOIN_ACK:
             # Host acknowledged our join request
             self.game_state = "waiting"
             self.host_id = packet.source

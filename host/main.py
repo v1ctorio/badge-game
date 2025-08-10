@@ -8,6 +8,7 @@ PACKET_WIN = 3       # Host tells badge they won
 PACKET_LOSE = 4      # Host tells badge they were eliminated
 PACKET_START = 5     # Host starts a new round
 PACKET_JOIN_ACK = 6  # Host acknowledges join request
+PACKET_HOST_ANNOUNCE = 7  # Host announces its presence
 
 class App(badge.BaseApp):
 
@@ -18,6 +19,7 @@ class App(badge.BaseApp):
         self.round_timer = 0
         self.round_duration = 10.0  
         self.current_round = 0
+        self.last_announce_time = 0
 
     def on_open(self):
         self.logger.info("Badge game host started!")
@@ -40,6 +42,12 @@ class App(badge.BaseApp):
 
     def handle_waiting_state(self):
         self.update_waiting_display()
+        
+        # Broadcast host presence every 2 seconds
+        current_time = badge.time.monotonic()
+        if current_time - self.last_announce_time > 2.0:
+            self.announce_host_presence()
+            self.last_announce_time = current_time
         
         if badge.input.get_button(Buttons.SW3) and len(self.participants) >= 2:
             self.start_new_round()
@@ -169,6 +177,12 @@ class App(badge.BaseApp):
         """Broadcast game status to all badges"""
         status_data = bytes([status_type, self.current_round, len(self.participants)])
         badge.radio.send_packet(0xFFFF, status_data)
+    
+    def announce_host_presence(self):
+        """Broadcast that this badge is hosting a game"""
+        announce_data = bytes([PACKET_HOST_ANNOUNCE, len(self.participants)])
+        badge.radio.send_packet(0xFFFF, announce_data)
+        self.logger.info(f"Broadcasting host presence with {len(self.participants)} players")
 
     def update_waiting_display(self):
         badge.display.fill(1)
