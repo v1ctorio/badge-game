@@ -42,9 +42,8 @@ class GameHost:
         self.round_results = []
 
     def update(self, current_time):
-        # Announce presence every 3 seconds
+        # Send periodic announcements
         if current_time - self.last_announce > DISCOVERY_INTERVAL:
-            self.app.logger.info(f"Host announcing presence (every {DISCOVERY_INTERVAL}s)")
             self.announce_presence()
             self.last_announce = current_time
 
@@ -75,7 +74,6 @@ class GameHost:
                 "game_active": self.game_active
             }
             packet_data = bytes([PACKET_HOST_ANNOUNCE]) + json.dumps(data).encode()
-            self.app.logger.info(f"Sending broadcast to 0xFFFF: {data}")
             badge.radio.send_packet(0xFFFF, packet_data)
             self.app.logger.info(f"Announced presence as {host_name}: {len(self.players)}/{MAX_PLAYERS} players")
         except Exception as e:
@@ -268,7 +266,6 @@ class GameClient:
         self.players = []
         self.last_message = ""
         self.round_time_left = 0
-        self.app.logger.info("GameClient initialized in discovering state")
 
     def update(self, current_time):
         if self.state == "discovering":
@@ -285,26 +282,21 @@ class GameClient:
             self.last_heartbeat = current_time
 
     def handle_discovery(self, current_time):
-        self.app.logger.info(f"Discovery state: {len(self.discovered_hosts)} hosts found (last_discovery: {current_time - self.last_discovery:.1f}s ago)")
-
         # Clean up old discovered hosts
         timeout_hosts = []
         for host_id, data in self.discovered_hosts.items():
             if current_time - data["last_seen"] > 15.0:
                 timeout_hosts.append(host_id)
         for host_id in timeout_hosts:
-            self.app.logger.info(f"Removing timed out host: {host_id:04X}")
             del self.discovered_hosts[host_id]
 
         # Auto-join best available host
         if self.discovered_hosts and current_time - self.last_discovery > 2.0:
-            self.app.logger.info(f"Looking for host to join, {len(self.discovered_hosts)} available")
             # Pick host with most players but not full
             best_host = None
             best_score = -1
 
             for host_id, data in self.discovered_hosts.items():
-                self.app.logger.info(f"Host {host_id:04X}: {data['players']}/{data['max_players']} players")
                 if data["players"] < data["max_players"]:
                     score = data["players"]  # Prefer hosts with more players
                     if score > best_score:
@@ -312,11 +304,8 @@ class GameClient:
                         best_host = host_id
 
             if best_host:
-                self.app.logger.info(f"Attempting to join best host: {best_host:04X}")
                 self.attempt_join(best_host)
                 self.last_discovery = current_time
-            else:
-                self.app.logger.info("No suitable hosts found to join")
 
     def attempt_join(self, host_id):
         try:
@@ -416,8 +405,10 @@ class App(badge.BaseApp):
         self.packet_queue = []
 
     def on_open(self):
-        self.logger.info("Button Elimination Game started!")
-        self.show_main_menu()
+        self.logger.info("Button Elimination Host started!")
+        # Auto-start as host
+        self.start_host()
+        self.in_menu = False
 
     def loop(self):
         current_time = badge.time.monotonic()
@@ -430,7 +421,7 @@ class App(badge.BaseApp):
         else:
             # Handle return to menu button when not in menu
             pressed = self.update_button_debounce(current_time)
-            if pressed == Buttons.SW16:
+            if pressed == Buttons.SW17:
                 self.return_to_menu()
                 return
             elif pressed == Buttons.SW6 and self.is_host and self.host:
@@ -439,7 +430,6 @@ class App(badge.BaseApp):
                     self.logger.info("Host starting game")
                     self.host.game_active = True
                     self.host.start_round()
-
             if self.is_host and self.host:
                 self.host.update(current_time)
             elif not self.is_host and self.client:
@@ -453,21 +443,21 @@ class App(badge.BaseApp):
         time.sleep(0.1)
 
     def update_button_debounce(self, current_time):
-        buttons_to_check = [Buttons.SW4, Buttons.SW5, Buttons.SW6, Buttons.SW17]
-
-        for button in buttons_to_check:
+        for button in [Buttons.SW4, Buttons.SW5, Buttons.SW6, Buttons.SW17]:
             if button not in self.button_debounce:
                 self.button_debounce[button] = 0
             if current_time - self.button_debounce[button] > 0.3:
-                button_state = badge.input.get_button(button)
-                if button_state:
-                    self.logger.info(f"Button pressed: {button}")
+                if badge.input.get_button(button):
+                    self.logger.info(f"Raw button detected: {button}")
                     self.button_debounce[button] = current_time
                     return button
         return None
 
     def handle_menu_input(self):
         pressed = self.update_button_debounce(badge.time.monotonic())
+
+        if pressed:
+            self.logger.info(f"Button pressed: {pressed}")
 
         if pressed == Buttons.SW4:  # Up
             self.logger.info("Menu up")
@@ -505,7 +495,7 @@ class App(badge.BaseApp):
         self.in_menu = False
         self.is_host = False
         self.client = GameClient(self)
-        self.logger.info("Started as client - looking for hosts")
+        self.logger.info("Started as client")
 
     def start_host(self):
         self.in_menu = False
@@ -624,7 +614,6 @@ class App(badge.BaseApp):
 
         # Add packet to queue with timestamp
         current_time = badge.time.monotonic()
-        self.logger.info(f"on_packet: Received packet from {packet.source:04X} type {packet.data[0]} (queue size: {len(self.packet_queue)})")
         self.packet_queue.append((packet, current_time))
 
         # Keep queue size reasonable
@@ -637,8 +626,6 @@ class App(badge.BaseApp):
         while self.packet_queue and processed < 5:
             packet, packet_time = self.packet_queue.pop(0)
             packet_type = packet.data[0]
-
-            self.logger.info(f"Processing packet type {packet_type} from {packet.source:04X}")
 
             try:
                 if self.is_host:
@@ -676,8 +663,6 @@ class App(badge.BaseApp):
                 host_name = data.get("host_name", f"Host-{packet.source:04X}")
                 host_badge_id = data.get("badge_id", packet.source)
 
-                self.logger.info(f"Found host: {host_name} ({packet.source:04X}) with {data.get('players', 0)} players")
-
                 # Try to save/update host contact if we have a real name
                 try:
                     if host_badge_id and host_name and not host_name.startswith("Host-"):
@@ -697,10 +682,8 @@ class App(badge.BaseApp):
                     "last_seen": current_time,
                     "badge_id": host_badge_id
                 }
-
-                self.logger.info(f"Total discovered hosts: {len(self.client.discovered_hosts)}")
-            except Exception as e:
-                self.logger.error(f"Failed to parse host announcement: {e}")
+            except:
+                pass
 
         elif packet_type == PACKET_JOIN_RESPONSE:
             try:
