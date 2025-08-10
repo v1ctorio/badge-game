@@ -73,5 +73,10 @@ class App(badge.BaseApp):
 
             self.button_pressed[button_name] = button_currently_pressed
 
+    def show_winner(self, name):
+        badge.display.fill(1)
+        badge.display.text(text=f"Winner: {name}", x=0, y=0, color=0)
+        badge.display.show()
+
     def loop(self):
         self.check_buttons()
