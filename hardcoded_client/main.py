@@ -20,7 +20,7 @@ button_choices = {
     Buttons.SW12: 11,
     Buttons.SW4: 12,
     Buttons.SW11: 13,
-    Buttons.SW3: 14, # Added SW3 to fill the spot
+    Buttons.SW3: 14,
 }
 
 class App(badge.BaseApp):
