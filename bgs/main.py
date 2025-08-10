@@ -23,6 +23,14 @@ CONNECTION_TIMEOUT = 30.0   # Connection timeout
 MAX_PLAYERS = 8             # Maximum players per game
 DISCOVERY_INTERVAL = 3.0    # Host discovery frequency
 
+# Hardcoded badge configuration for easier testing
+BADGE_CONFIG = {
+    0x182a: {"name": "Daniel", "role": "host"},     # Host badge
+    0x492a: {"name": "Vic", "role": "client"},      # Client 1
+    0x5f23: {"name": "Jorge", "role": "client"},    # Client 2
+}
+HOST_BADGE_ID = 0x182a
+
 GAME_BUTTONS = [
     (Buttons.SW4, 4), (Buttons.SW5, 5), (Buttons.SW6, 6),
     (Buttons.SW7, 7), (Buttons.SW8, 8), (Buttons.SW9, 9), (Buttons.SW10, 10),
@@ -59,11 +67,14 @@ class GameHost:
     def announce_presence(self):
         try:
             my_contact = badge.contacts.my_contact()
-            if my_contact and my_contact.name:
+            badge_id = my_contact.badge_id if my_contact else 0
+
+            # Use hardcoded name if available
+            if badge_id in BADGE_CONFIG:
+                host_name = BADGE_CONFIG[badge_id]["name"]
+            elif my_contact and my_contact.name:
                 host_name = my_contact.name
-                badge_id = my_contact.badge_id
             else:
-                badge_id = my_contact.badge_id if my_contact else 0
                 host_name = f"Host-{badge_id:04X}"
 
             data = {
@@ -290,9 +301,18 @@ class GameClient:
         for host_id in timeout_hosts:
             del self.discovered_hosts[host_id]
 
-        # Auto-join best available host
+        # Auto-join specific host based on hardcoded configuration
         if self.discovered_hosts and current_time - self.last_discovery > 2.0:
-            # Pick host with most players but not full
+            # First try to join the designated host
+            if HOST_BADGE_ID in self.discovered_hosts:
+                host_data = self.discovered_hosts[HOST_BADGE_ID]
+                if host_data["players"] < host_data["max_players"]:
+                    self.app.logger.info(f"Auto-joining designated host: {HOST_BADGE_ID:04X}")
+                    self.attempt_join(HOST_BADGE_ID)
+                    self.last_discovery = current_time
+                    return
+
+            # Fallback to original logic if designated host not found
             best_host = None
             best_score = -1
 
@@ -310,12 +330,16 @@ class GameClient:
     def attempt_join(self, host_id):
         try:
             my_contact = badge.contacts.my_contact()
-            if my_contact and my_contact.name:
+            badge_id = my_contact.badge_id if my_contact else 0
+
+            # Use hardcoded name if available, otherwise use contact name
+            if badge_id in BADGE_CONFIG:
+                player_name = BADGE_CONFIG[badge_id]["name"]
+                self.app.logger.info(f"Using hardcoded name: {player_name}")
+            elif my_contact and my_contact.name:
                 player_name = my_contact.name
-                badge_id = my_contact.badge_id
             else:
                 # Fallback if no contact or no name set
-                badge_id = my_contact.badge_id if my_contact else 0
                 player_name = f"Badge-{badge_id:04X}"
 
             data = {
@@ -406,7 +430,22 @@ class App(badge.BaseApp):
 
     def on_open(self):
         self.logger.info("Button Elimination Game started!")
-        self.show_main_menu()
+
+        # Get this badge's ID and auto-configure role
+        my_contact = badge.contacts.my_contact()
+        my_badge_id = my_contact.badge_id if my_contact else 0
+
+        if my_badge_id in BADGE_CONFIG:
+            config = BADGE_CONFIG[my_badge_id]
+            self.logger.info(f"Auto-configuring as {config['role']} for {config['name']} ({my_badge_id:04X})")
+
+            if config['role'] == "host":
+                self.start_host()
+            else:
+                self.start_client()
+        else:
+            self.logger.info(f"Unknown badge ID {my_badge_id:04X}, showing menu")
+            self.show_main_menu()
 
     def loop(self):
         current_time = badge.time.monotonic()
@@ -504,12 +543,28 @@ class App(badge.BaseApp):
         self.show_main_menu()
 
     def update_display(self):
-        if self.in_menu:
-            return
-
         badge.display.fill(1)
 
-        if self.is_host:
+        if self.in_menu:
+            # Show unknown badge menu
+            my_contact = badge.contacts.my_contact()
+            my_badge_id = my_contact.badge_id if my_contact else 0
+
+            badge.display.nice_text("UNKNOWN BADGE", 0, 0, 24)
+            badge.display.nice_text(f"ID: {my_badge_id:04X}", 0, 30, 18)
+            badge.display.nice_text("Select mode:", 0, 60, 18)
+
+            # Menu options
+            y = 90
+            options = ["Join Game", "Host Game"]
+            for i, option in enumerate(options):
+                prefix = "> " if i == self.menu_selection else "  "
+                badge.display.nice_text(f"{prefix}{option}", 0, y, 18)
+                y += 25
+
+            badge.display.nice_text("SW4/SW5: Navigate", 0, 160, 18)
+            badge.display.nice_text("SW6: Select", 0, 180, 18)
+        elif self.is_host:
             self.draw_host_display()
         else:
             self.draw_client_display()
@@ -520,7 +575,11 @@ class App(badge.BaseApp):
         if not self.host:
             return
 
-        badge.display.nice_text("HOST MODE", 0, 0, 24)
+        my_contact = badge.contacts.my_contact()
+        my_badge_id = my_contact.badge_id if my_contact else 0
+        host_name = BADGE_CONFIG.get(my_badge_id, {}).get("name", "HOST")
+
+        badge.display.nice_text(f"{host_name} (HOST)", 0, 0, 24)
         badge.display.nice_text(f"Players: {len(self.host.players)}/{MAX_PLAYERS}", 0, 30, 18)
 
         if self.host.game_active:
@@ -549,8 +608,13 @@ class App(badge.BaseApp):
             return
 
         if self.client.state == "discovering":
-            badge.display.nice_text("SEARCHING FOR GAMES", 0, 0, 18)
+            my_contact = badge.contacts.my_contact()
+            my_badge_id = my_contact.badge_id if my_contact else 0
+            client_name = BADGE_CONFIG.get(my_badge_id, {}).get("name", "CLIENT")
+
+            badge.display.nice_text(f"{client_name} - SEARCHING", 0, 0, 18)
             badge.display.nice_text(f"Found: {len(self.client.discovered_hosts)}", 0, 30, 18)
+            badge.display.nice_text(f"Looking for Daniel...", 0, 50, 18)
 
             y = 60
             for host_id, data in list(self.client.discovered_hosts.items())[:4]:
@@ -561,7 +625,11 @@ class App(badge.BaseApp):
                 y += 20
 
         elif self.client.state == "connected":
-            badge.display.nice_text("CONNECTED", 0, 0, 24)
+            my_contact = badge.contacts.my_contact()
+            my_badge_id = my_contact.badge_id if my_contact else 0
+            client_name = BADGE_CONFIG.get(my_badge_id, {}).get("name", "CLIENT")
+
+            badge.display.nice_text(f"{client_name} - CONNECTED", 0, 0, 18)
             badge.display.nice_text("Waiting for game start", 0, 30, 18)
             if self.client.host_id:
                 badge.display.nice_text(f"Host: {self.client.host_id:04X}", 0, 55, 18)
@@ -598,18 +666,22 @@ class App(badge.BaseApp):
 
         badge.display.nice_text("SW17: Menu", 0, 180, 18)
 
-    def on_packet(self, packet, _):
-        # Quick and simple - just queue the packet for processing in app thread
-        if len(packet.data) == 0:
-            return
+    def on_packet(self, packet, is_foreground):
+        """Handle incoming radio packets by queuing them for processing in app thread"""
+        try:
+            # Quick and simple - just queue the packet for processing in app thread
+            if len(packet.data) == 0:
+                return
 
-        # Add packet to queue with timestamp
-        current_time = badge.time.monotonic()
-        self.packet_queue.append((packet, current_time))
+            # Add packet to queue with timestamp
+            current_time = badge.time.monotonic()
+            self.packet_queue.append((packet, current_time))
 
-        # Keep queue size reasonable
-        if len(self.packet_queue) > 50:
-            self.packet_queue.pop(0)
+            # Keep queue size reasonable
+            if len(self.packet_queue) > 50:
+                self.packet_queue.pop(0)
+        except Exception as e:
+            self.logger.error(f"Error in on_packet: {e}")
 
     def process_packet_queue(self, current_time):
         # Process up to 5 packets per loop to avoid blocking
