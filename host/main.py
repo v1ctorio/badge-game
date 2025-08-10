@@ -7,6 +7,7 @@ PACKET_BUTTON = 2    # Badge pressed a button (data = button number)
 PACKET_WIN = 3       # Host tells badge they won
 PACKET_LOSE = 4      # Host tells badge they were eliminated
 PACKET_START = 5     # Host starts a new round
+PACKET_JOIN_ACK = 6  # Host acknowledges join request
 
 class App(badge.BaseApp):
 
@@ -68,14 +69,11 @@ class App(badge.BaseApp):
         self.game_state = "playing"
         self.round_timer = badge.time.monotonic()
         
-        # Reset button choices for this round
         for player in self.participants.values():
             player['button'] = None
         
-        # Send start signal to all active players via broadcast first, then individual packets
         self.send_packet_to_badge(0xFFFF, PACKET_START, bytes([self.current_round]))
         
-        # Also send individual packets as backup
         for badge_id, player in self.participants.items():
             if not player['eliminated']:
                 self.send_packet_to_badge(badge_id, PACKET_START, bytes([self.current_round]))
@@ -86,7 +84,6 @@ class App(badge.BaseApp):
         self.game_state = "round_end"
         self.round_timer = badge.time.monotonic()
         
-        # Count button presses
         button_counts = {}
         for player in self.participants.values():
             if not player['eliminated'] and player['button'] is not None:
@@ -95,7 +92,6 @@ class App(badge.BaseApp):
                     button_counts[button] = []
                 button_counts[button].append(player)
         
-        # Eliminate players who pressed the same button as someone else
         eliminated_this_round = []
         survivors = []
         
@@ -104,18 +100,15 @@ class App(badge.BaseApp):
                 continue
                 
             if player['button'] is None:
-                # Didn't press any button - they survive
                 survivors.append(badge_id)
                 self.send_packet_to_badge(badge_id, PACKET_WIN, b"No button pressed - safe!")
             else:
                 button = player['button']
                 if len(button_counts[button]) > 1:
-                    # Multiple people pressed this button - eliminate them
                     player['eliminated'] = True
                     eliminated_this_round.append(badge_id)
                     self.send_packet_to_badge(badge_id, PACKET_LOSE, f"Button {button} eliminated!".encode())
                 else:
-                    # Only person to press this button - they survive
                     survivors.append(badge_id)
                     self.send_packet_to_badge(badge_id, PACKET_WIN, f"Button {button} - safe!".encode())
         
@@ -140,7 +133,6 @@ class App(badge.BaseApp):
         badge.display.nice_text("Press SW3 for new game", 0, 150, 18)
         badge.display.show()
         
-        # Reset game state
         for player in self.participants.values():
             player['eliminated'] = False
             player['button'] = None
@@ -150,7 +142,6 @@ class App(badge.BaseApp):
         packet_type = packet.data[0] if len(packet.data) > 0 else 0
         
         if packet_type == PACKET_JOIN:
-            # New player wants to join
             player_name = packet.data[1:].decode() if len(packet.data) > 1 else f"Badge {packet.source:04X}"
             self.participants[packet.source] = {
                 'name': player_name,
@@ -159,8 +150,10 @@ class App(badge.BaseApp):
             }
             self.logger.info(f"Player {player_name} (ID: {packet.source:04X}) joined")
             
+            ack_data = f"Welcome {player_name}!".encode()
+            self.send_packet_to_badge(packet.source, PACKET_JOIN_ACK, ack_data)
+            
         elif packet_type == PACKET_BUTTON and packet.source in self.participants:
-            # Player pressed a button
             if self.game_state == "playing" and not self.participants[packet.source]['eliminated']:
                 button_num = packet.data[1] if len(packet.data) > 1 else 0
                 self.participants[packet.source]['button'] = button_num
@@ -169,7 +162,6 @@ class App(badge.BaseApp):
     def send_packet_to_badge(self, badge_id, packet_type, data):
         """Send a packet to a specific badge or broadcast"""
         packet_data = bytes([packet_type]) + data
-        # Use broadcast if badge_id is None or for announcements
         dest_id = badge_id if badge_id is not None else 0xFFFF
         badge.radio.send_packet(dest_id, packet_data)
     
@@ -186,7 +178,7 @@ class App(badge.BaseApp):
         
         y_pos = 90
         for badge_id, player in list(self.participants.items())[:3]:  # Show first 3 players
-            badge.display.nice_text(f"{player['name'][:12]}", 0, y_pos, 16)
+            badge.display.nice_text(f"{player['name'][:12]}", 0, y_pos, 18)
             y_pos += 20
             
         if len(self.participants) >= 2:

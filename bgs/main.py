@@ -8,6 +8,7 @@ PACKET_BUTTON = 2    # Badge pressed a button (data = button number)
 PACKET_WIN = 3       # Host tells badge they won
 PACKET_LOSE = 4      # Host tells badge they were eliminated
 PACKET_START = 5     # Host starts a new round
+PACKET_JOIN_ACK = 6  # Host acknowledges join request
 
 GAME_BUTTONS = [
     (Buttons.SW3, 3),
@@ -23,7 +24,7 @@ GAME_BUTTONS = [
     (Buttons.SW13, 13),
     (Buttons.SW14, 14),
     (Buttons.SW15, 15),
-    (Buttons.SW16, 18),
+    (Buttons.SW16, 16),
     (Buttons.SW17, 17),
     (Buttons.SW18, 18),
 ]
@@ -48,8 +49,8 @@ class App(badge.BaseApp):
         badge.display.nice_text("BUTTON ELIMINATION", 0, 0, 18)
         badge.display.nice_text("PLAYER", 0, 25, 18)
         badge.display.nice_text("Searching for host...", 0, 60, 18)
-        badge.display.nice_text("SW3-SW18: Game buttons", 0, 120, 14)
-        badge.display.nice_text("Hold SW3+SW4 to find host", 0, 140, 14)
+        badge.display.nice_text("SW3-SW18: Game buttons", 0, 120, 18)
+        badge.display.nice_text("Hold SW3+SW4 to find host", 0, 140, 18)
         badge.display.show()
 
     def loop(self):
@@ -171,7 +172,17 @@ class App(badge.BaseApp):
             
         packet_type = packet.data[0]
         
-        if packet_type == PACKET_START:
+        if packet_type == PACKET_JOIN_ACK:
+            # Host acknowledged our join request
+            self.game_state = "waiting"
+            self.host_id = packet.source
+            welcome_msg = packet.data[1:].decode() if len(packet.data) > 1 else "Joined game!"
+            self.logger.info(f"Connected to host {self.host_id:04X}: {welcome_msg}")
+            
+            # Play connection sound
+            badge.buzzer.tone(1200, 0.15)
+            
+        elif packet_type == PACKET_START:
             # Host started a new round
             self.game_state = "playing"
             self.host_id = packet.source
@@ -228,9 +239,3 @@ class App(badge.BaseApp):
             
             # Play elimination sound
             badge.buzzer.tone(400, 0.3)
-            
-        # If we receive any packet from a host, we know we're connected
-        if self.game_state == "disconnected" and packet.source != badge.contacts.my_contact().badge_id:
-            self.game_state = "waiting"
-            self.host_id = packet.source
-            self.logger.info(f"Connected to host {self.host_id:04X}")
